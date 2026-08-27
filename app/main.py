@@ -2,6 +2,7 @@
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List
+from decimal import Decimal
 from .database import Base, engine, get_db
 from .schemas import (
     AccountCreateRequest, 
@@ -25,7 +26,8 @@ app = FastAPI(
     description="Deterministic Transaction Banking Ledger API compliant with RBI Master Directions, Section 25 Ring-Fencing & ISO 20022 standards.",
     version="4.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
 )
 
 @app.get("/", include_in_schema=False)
