@@ -97,10 +97,10 @@ class CreditUnderwritingResponse(BaseModel):
     underwriting_verdict: str
 
 class BankStatementLineItem(BaseModel):
-    utr_reference: str = Field(..., example="UTR_ICICI_2026_88921")
-    virtual_account_number: str = Field(..., example="HDFC_VENDORALPH_5D295A4F")
-    cleared_amount: Decimal = Field(..., gt=0, decimal_places=2, example=2500.00)
-    bank_timestamp: str = Field(..., example="2026-08-27T10:00:00Z")
+    utr_reference: str
+    virtual_account_number: str
+    cleared_amount: Decimal
+    bank_timestamp: str
 
 class BulkReconciliationRequest(BaseModel):
     statement_batch_id: str = Field(..., example="BATCH_EOD_20260827_HDFC")
@@ -127,7 +127,6 @@ class BulkReconciliationReport(BaseModel):
     ledger_breaks: List[ReconciliationBreakItem]
     status: str
 
-# STEP 1 SCHEMAS: Auto-Heal & Exception Operations
 class AutoHealBreakRequest(BaseModel):
     utr_reference: str = Field(..., example="UTR_UNRECORDED_DROP_991")
     virtual_account_number: str = Field(..., example="HDFC_VENDORALPH_5D295A4F")
@@ -145,3 +144,8 @@ class AutoHealBreakResponse(BaseModel):
     vendor_net_credited: Decimal
     audit_notes: str
     resolved_at: datetime
+
+# STAGE 6 SCHEMAS: ISO 20022 Parser
+class Camt053ReconciliationRequest(BaseModel):
+    statement_batch_id: str = Field(..., example="BATCH_CAMT_20260827")
+    xml_payload: str = Field(..., example="<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:camt.053.001.08\"><BkToCstmrStmt><Stmt><Ntry><Amt>12000.00</Amt><NtryDtls><TxDtls><Refs><EndToEndId>UTR_HDFC_XML_001</EndToEndId></Refs><RltdPties><CdtrAcct><Id><Othr><Id>PASTE_YOUR_LIVE_ACCOUNT_NUMBER</Id></Othr></Id></CdtrAcct></RltdPties></TxDtls></NtryDtls></Ntry></Stmt></BkToCstmrStmt></Document>")
