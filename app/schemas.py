@@ -96,7 +96,6 @@ class CreditUnderwritingResponse(BaseModel):
     max_recommended_loan_tenure_days: int
     underwriting_verdict: str
 
-# STAGE 5 SCHEMAS: Bulk Statement & Reconciliation
 class BankStatementLineItem(BaseModel):
     utr_reference: str = Field(..., example="UTR_ICICI_2026_88921")
     virtual_account_number: str = Field(..., example="HDFC_VENDORALPH_5D295A4F")
@@ -127,3 +126,22 @@ class BulkReconciliationReport(BaseModel):
     reconciliation_rate_percent: float
     ledger_breaks: List[ReconciliationBreakItem]
     status: str
+
+# STEP 1 SCHEMAS: Auto-Heal & Exception Operations
+class AutoHealBreakRequest(BaseModel):
+    utr_reference: str = Field(..., example="UTR_UNRECORDED_DROP_991")
+    virtual_account_number: str = Field(..., example="HDFC_VENDORALPH_5D295A4F")
+    cleared_amount: Decimal = Field(..., gt=0, decimal_places=2, example=5000.00)
+    take_rate_percentage: Optional[Decimal] = Field(Decimal("10.0"), example=10.0)
+    override_reason: str = Field("AUTOHOST_RECON_EXCEPTION_HEALING", example="AUTOHOST_RECON_EXCEPTION_HEALING")
+
+class AutoHealBreakResponse(BaseModel):
+    resolution_status: str
+    utr_reference: str
+    transaction_id: str
+    vendor_account_number: str
+    recovered_amount: Decimal
+    platform_take_credited: Decimal
+    vendor_net_credited: Decimal
+    audit_notes: str
+    resolved_at: datetime

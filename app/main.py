@@ -16,7 +16,9 @@ from .schemas import (
     PayoutResponse,
     CreditUnderwritingResponse,
     BulkReconciliationRequest,
-    BulkReconciliationReport
+    BulkReconciliationReport,
+    AutoHealBreakRequest,
+    AutoHealBreakResponse
 )
 from .services import LedgerService
 from .models import Account
@@ -26,7 +28,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="B2B Virtual Account & Double-Entry Ledger Engine",
     description="Deterministic Transaction Banking Ledger API compliant with RBI Master Directions, Section 25 Ring-Fencing & ISO 20022 standards.",
-    version="5.0.0",
+    version="5.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
@@ -77,11 +79,15 @@ def evaluate_vendor_credit_risk(vendor_account_id: str, db: Session = Depends(ge
 
 @app.post("/api/v1/reconciliation/process-statement", response_model=BulkReconciliationReport, tags=["Reconciliation & Breaks Management"])
 def reconcile_bank_statement(request: BulkReconciliationRequest, db: Session = Depends(get_db)):
-    """
-    Ingests EOD Bank Settlement files (MT940 / camt.053 / PA dumps).
-    Performs deterministic UTR matching and generates a Ledger Breaks audit report.
-    """
     return LedgerService.reconcile_bank_statement(db, request)
+
+@app.post("/api/v1/reconciliation/auto-heal-break", response_model=AutoHealBreakResponse, tags=["Reconciliation & Breaks Management"])
+def auto_heal_ledger_break(request: AutoHealBreakRequest, db: Session = Depends(get_db)):
+    """
+    Automated Exception Healing:
+    Resolves unrecorded bank statement breaks by forcing an audited, balanced double-entry split.
+    """
+    return LedgerService.auto_heal_ledger_break(db, request)
 
 @app.post("/api/v1/ledger/post-transaction", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED, tags=["Double-Entry Engine"])
 def post_transaction(request: PostTransactionRequest, db: Session = Depends(get_db)):
@@ -102,4 +108,4 @@ def get_balance(account_id: str, db: Session = Depends(get_db)):
 
 @app.get("/health", tags=["System"])
 def health_check():
-    return {"status": "HEALTHY", "engine": "B2B_VIRTUAL_ACCOUNT_LEDGER_V5_RECONCILIATION_ACTIVE"}
+    return {"status": "HEALTHY", "engine": "B2B_VIRTUAL_ACCOUNT_LEDGER_V5_1_AUTOHEAL_ACTIVE"}

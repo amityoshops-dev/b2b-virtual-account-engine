@@ -14,7 +14,8 @@ from .schemas import (
     PostTransactionRequest, 
     BankWebhookPayload, 
     PayoutInitiationRequest,
-    BulkReconciliationRequest
+    BulkReconciliationRequest,
+    AutoHealBreakRequest
 )
 
 WEBHOOK_SECRET = "rbi_escrow_secret_key_2026"
@@ -89,6 +90,68 @@ class LedgerService:
         db.commit()
         db.refresh(tx)
         return tx, "PROCESSED_SUCCESS"
+
+    @staticmethod
+    def auto_heal_ledger_break(db: Session, request: AutoHealBreakRequest):
+        idempotency_key = f"HEALED_BREAK_{request.utr_reference}"
+        existing_tx = db.query(Transaction).filter(
+            (Transaction.idempotency_key == idempotency_key) | 
+            (Transaction.reference_id == request.utr_reference)
+        ).first()
+
+        if existing_tx:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Conflict: Break for UTR '{request.utr_reference}' has already been resolved or booked in transaction {existing_tx.id}."
+            )
+
+        vendor_acc = db.query(Account).filter(Account.account_number == request.virtual_account_number).first()
+        if not vendor_acc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Virtual Account '{request.virtual_account_number}' not found in Nodal Directory."
+            )
+
+        clearing_acc = db.query(Account).filter(Account.account_type == AccountType.CLEARING_INBOUND).first()
+        platform_acc = db.query(Account).filter(Account.account_type == AccountType.OPERATING_REVENUE).first()
+
+        if not clearing_acc or not platform_acc:
+            raise HTTPException(status_code=500, detail="Master Clearing or Platform Revenue account missing.")
+
+        gross_amount = request.cleared_amount
+        take_rate = (request.take_rate_percentage or Decimal("10.0")) / Decimal("100.0")
+        platform_cut = gross_amount * take_rate
+        vendor_cut = gross_amount - platform_cut
+
+        tx = Transaction(
+            idempotency_key=idempotency_key,
+            reference_id=request.utr_reference,
+            description=f"Auto-Healed Break: Forced Ingress Split for UTR {request.utr_reference} ({request.override_reason})",
+            status=TransactionStatus.POSTED
+        )
+        db.add(tx)
+        db.flush()
+
+        db.add(LedgerEntry(transaction_id=tx.id, account_id=clearing_acc.id, entry_type=EntryType.DEBIT, amount=gross_amount))
+        db.add(LedgerEntry(transaction_id=tx.id, account_id=platform_acc.id, entry_type=EntryType.CREDIT, amount=gross_amount))
+
+        db.add(LedgerEntry(transaction_id=tx.id, account_id=platform_acc.id, entry_type=EntryType.DEBIT, amount=vendor_cut))
+        db.add(LedgerEntry(transaction_id=tx.id, account_id=vendor_acc.id, entry_type=EntryType.CREDIT, amount=vendor_cut))
+
+        db.commit()
+        db.refresh(tx)
+
+        return {
+            "resolution_status": "BREAK_HEALED_AND_LEDGER_POSTED",
+            "utr_reference": request.utr_reference,
+            "transaction_id": tx.id,
+            "vendor_account_number": request.virtual_account_number,
+            "recovered_amount": gross_amount,
+            "platform_take_credited": platform_cut,
+            "vendor_net_credited": vendor_cut,
+            "audit_notes": f"Reconciliation exception resolved under reason: {request.override_reason}",
+            "resolved_at": tx.created_at
+        }
 
     @staticmethod
     def generate_iso20022_pain001(msg_id: str, payment_info_id: str, amount: Decimal, creditor_name: str, creditor_iban_acc: str, creditor_bic_ifsc: str) -> str:
@@ -232,7 +295,6 @@ class LedgerService:
 
     @staticmethod
     def reconcile_bank_statement(db: Session, request: BulkReconciliationRequest):
-        """Line-by-line reconciliation of external bank statement lines against internal double-entry records"""
         total_items = len(request.line_items)
         total_volume = sum(item.cleared_amount for item in request.line_items)
 
@@ -243,11 +305,9 @@ class LedgerService:
         clearing_acc = db.query(Account).filter(Account.account_type == AccountType.CLEARING_INBOUND).first()
 
         for item in request.line_items:
-            # Look for an internal transaction with the given reference_id (UTR)
             tx = db.query(Transaction).filter(Transaction.reference_id == item.utr_reference).first()
 
             if not tx:
-                # BREAK: Bank statement contains an inflow never registered via webhook/internal ledger
                 breaks.append({
                     "utr_reference": item.utr_reference,
                     "virtual_account_number": item.virtual_account_number,
@@ -257,7 +317,6 @@ class LedgerService:
                     "recommended_action": "FORCE_AUTOHOST_INGRESS_SPLIT"
                 })
             else:
-                # Find the gross debit recorded on the clearing transit leg for this transaction
                 clearing_entry = db.query(LedgerEntry).filter(
                     LedgerEntry.transaction_id == tx.id,
                     LedgerEntry.account_id == clearing_acc.id,
