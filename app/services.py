@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi import HTTPException, status
 from .models import Account, AccountType, Transaction, LedgerEntry, EntryType, TransactionStatus
-from .schemas import AccountCreateRequest, PostTransactionRequest, BankWebhookPayload, PayoutInitiationRequest
+from .schemas import (
+    AccountCreateRequest, 
+    PostTransactionRequest, 
+    BankWebhookPayload, 
+    PayoutInitiationRequest,
+    BulkReconciliationRequest
+)
 
 WEBHOOK_SECRET = "rbi_escrow_secret_key_2026"
 
@@ -58,10 +64,7 @@ class LedgerService:
         platform_acc = db.query(Account).filter(Account.account_type == AccountType.OPERATING_REVENUE).first()
 
         if not clearing_acc or not platform_acc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Master Clearing or Platform Revenue account missing."
-            )
+            raise HTTPException(status_code=500, detail="Master Clearing or Platform Revenue account missing.")
 
         gross_amount = payload.amount
         take_rate = (payload.take_rate_percentage or Decimal("10.0")) / Decimal("100.0")
@@ -194,7 +197,6 @@ class LedgerService:
         if not vendor_acc:
             raise HTTPException(status_code=404, detail="Vendor account ID not found.")
 
-        # Aggregate total historical credits (Settled Inflow)
         total_settled_credits = db.query(func.coalesce(func.sum(LedgerEntry.amount), Decimal("0"))).filter(
             LedgerEntry.account_id == vendor_account_id,
             LedgerEntry.entry_type == EntryType.CREDIT
@@ -203,11 +205,7 @@ class LedgerService:
         balance_info = LedgerService.get_account_balance(db, vendor_account_id)
         current_balance = balance_info["net_balance"]
 
-        # Financial Underwriting Metrics
-        # Eligible 60-day revolving WC limit = 80% of historical monthly throughput
         eligible_limit = total_settled_credits * Decimal("0.80")
-        
-        # Debt Service Coverage Ratio (Simulated based on cash retention)
         dscr = 2.85 if total_settled_credits > 1000 else 1.45
         velocity_index = 4.2
 
@@ -230,6 +228,72 @@ class LedgerService:
             "eligible_revolving_wc_limit": eligible_limit,
             "max_recommended_loan_tenure_days": 60,
             "underwriting_verdict": verdict
+        }
+
+    @staticmethod
+    def reconcile_bank_statement(db: Session, request: BulkReconciliationRequest):
+        """Line-by-line reconciliation of external bank statement lines against internal double-entry records"""
+        total_items = len(request.line_items)
+        total_volume = sum(item.cleared_amount for item in request.line_items)
+
+        matched_count = 0
+        matched_volume = Decimal("0")
+        breaks = []
+
+        clearing_acc = db.query(Account).filter(Account.account_type == AccountType.CLEARING_INBOUND).first()
+
+        for item in request.line_items:
+            # Look for an internal transaction with the given reference_id (UTR)
+            tx = db.query(Transaction).filter(Transaction.reference_id == item.utr_reference).first()
+
+            if not tx:
+                # BREAK: Bank statement contains an inflow never registered via webhook/internal ledger
+                breaks.append({
+                    "utr_reference": item.utr_reference,
+                    "virtual_account_number": item.virtual_account_number,
+                    "statement_amount": item.cleared_amount,
+                    "internal_recorded_amount": None,
+                    "break_reason": "UNRECORDED_BANK_INGRESS: UTR missing from internal transactions.",
+                    "recommended_action": "FORCE_AUTOHOST_INGRESS_SPLIT"
+                })
+            else:
+                # Find the gross debit recorded on the clearing transit leg for this transaction
+                clearing_entry = db.query(LedgerEntry).filter(
+                    LedgerEntry.transaction_id == tx.id,
+                    LedgerEntry.account_id == clearing_acc.id,
+                    LedgerEntry.entry_type == EntryType.DEBIT
+                ).first() if clearing_acc else None
+
+                internal_amount = clearing_entry.amount if clearing_entry else Decimal("0")
+
+                if internal_amount == item.cleared_amount:
+                    matched_count += 1
+                    matched_volume += item.cleared_amount
+                else:
+                    breaks.append({
+                        "utr_reference": item.utr_reference,
+                        "virtual_account_number": item.virtual_account_number,
+                        "statement_amount": item.cleared_amount,
+                        "internal_recorded_amount": internal_amount,
+                        "break_reason": f"AMOUNT_MISMATCH: Bank cleared ₹{item.cleared_amount}, Ledger booked ₹{internal_amount}.",
+                        "recommended_action": "MANUAL_TREASURY_EXCEPTION_ADJUSTMENT"
+                    })
+
+        breaks_count = len(breaks)
+        breaks_volume = total_volume - matched_volume
+        reconciliation_rate = (matched_count / total_items * 100) if total_items > 0 else 100.0
+
+        return {
+            "statement_batch_id": request.statement_batch_id,
+            "total_batch_items": total_items,
+            "total_cleared_volume": total_volume,
+            "matched_count": matched_count,
+            "matched_volume": matched_volume,
+            "breaks_count": breaks_count,
+            "breaks_volume": breaks_volume,
+            "reconciliation_rate_percent": round(reconciliation_rate, 2),
+            "ledger_breaks": breaks,
+            "status": "RECONCILIATION_COMPLETED_WITH_BREAKS" if breaks_count > 0 else "BALANCED_100_PERCENT"
         }
 
     @staticmethod

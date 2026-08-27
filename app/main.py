@@ -14,7 +14,9 @@ from .schemas import (
     WebhookProcessedResponse,
     PayoutInitiationRequest,
     PayoutResponse,
-    CreditUnderwritingResponse
+    CreditUnderwritingResponse,
+    BulkReconciliationRequest,
+    BulkReconciliationReport
 )
 from .services import LedgerService
 from .models import Account
@@ -24,7 +26,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="B2B Virtual Account & Double-Entry Ledger Engine",
     description="Deterministic Transaction Banking Ledger API compliant with RBI Master Directions, Section 25 Ring-Fencing & ISO 20022 standards.",
-    version="4.0.0",
+    version="5.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
@@ -73,6 +75,14 @@ def initiate_vendor_payout(request: PayoutInitiationRequest, db: Session = Depen
 def evaluate_vendor_credit_risk(vendor_account_id: str, db: Session = Depends(get_db)):
     return LedgerService.evaluate_credit_underwriting(db, vendor_account_id)
 
+@app.post("/api/v1/reconciliation/process-statement", response_model=BulkReconciliationReport, tags=["Reconciliation & Breaks Management"])
+def reconcile_bank_statement(request: BulkReconciliationRequest, db: Session = Depends(get_db)):
+    """
+    Ingests EOD Bank Settlement files (MT940 / camt.053 / PA dumps).
+    Performs deterministic UTR matching and generates a Ledger Breaks audit report.
+    """
+    return LedgerService.reconcile_bank_statement(db, request)
+
 @app.post("/api/v1/ledger/post-transaction", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED, tags=["Double-Entry Engine"])
 def post_transaction(request: PostTransactionRequest, db: Session = Depends(get_db)):
     tx = LedgerService.post_balanced_transaction(db, request)
@@ -92,4 +102,4 @@ def get_balance(account_id: str, db: Session = Depends(get_db)):
 
 @app.get("/health", tags=["System"])
 def health_check():
-    return {"status": "HEALTHY", "engine": "B2B_VIRTUAL_ACCOUNT_LEDGER_V4_UNDERWRITING_ACTIVE"}
+    return {"status": "HEALTHY", "engine": "B2B_VIRTUAL_ACCOUNT_LEDGER_V5_RECONCILIATION_ACTIVE"}

@@ -83,7 +83,6 @@ class PayoutResponse(BaseModel):
     iso20022_xml_payload: str
     timestamp: datetime
 
-# STAGE 4 SCHEMAS: Credit Risk & Working Capital Underwriting
 class CreditUnderwritingResponse(BaseModel):
     vendor_account_id: str
     vendor_account_number: str
@@ -96,3 +95,35 @@ class CreditUnderwritingResponse(BaseModel):
     eligible_revolving_wc_limit: Decimal
     max_recommended_loan_tenure_days: int
     underwriting_verdict: str
+
+# STAGE 5 SCHEMAS: Bulk Statement & Reconciliation
+class BankStatementLineItem(BaseModel):
+    utr_reference: str = Field(..., example="UTR_ICICI_2026_88921")
+    virtual_account_number: str = Field(..., example="HDFC_VENDORALPH_5D295A4F")
+    cleared_amount: Decimal = Field(..., gt=0, decimal_places=2, example=2500.00)
+    bank_timestamp: str = Field(..., example="2026-08-27T10:00:00Z")
+
+class BulkReconciliationRequest(BaseModel):
+    statement_batch_id: str = Field(..., example="BATCH_EOD_20260827_HDFC")
+    clearing_cycle: str = Field("T_PLUS_1", example="T_PLUS_1")
+    line_items: List[BankStatementLineItem]
+
+class ReconciliationBreakItem(BaseModel):
+    utr_reference: str
+    virtual_account_number: str
+    statement_amount: Decimal
+    internal_recorded_amount: Optional[Decimal]
+    break_reason: str
+    recommended_action: str
+
+class BulkReconciliationReport(BaseModel):
+    statement_batch_id: str
+    total_batch_items: int
+    total_cleared_volume: Decimal
+    matched_count: int
+    matched_volume: Decimal
+    breaks_count: int
+    breaks_volume: Decimal
+    reconciliation_rate_percent: float
+    ledger_breaks: List[ReconciliationBreakItem]
+    status: str
