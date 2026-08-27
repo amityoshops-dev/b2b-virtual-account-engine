@@ -1,4 +1,5 @@
 ﻿from fastapi import FastAPI, Depends, Header, Request, status, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List
 from .database import Base, engine, get_db
@@ -26,6 +27,10 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+@app.get("/", include_in_schema=False)
+def root_redirect():
+    return RedirectResponse(url="/docs")
 
 @app.post("/api/v1/accounts/virtual", response_model=AccountResponse, status_code=status.HTTP_201_CREATED, tags=["Accounts & VAN"])
 def create_virtual_account(request: AccountCreateRequest, db: Session = Depends(get_db)):
@@ -64,10 +69,6 @@ def initiate_vendor_payout(request: PayoutInitiationRequest, db: Session = Depen
 
 @app.get("/api/v1/underwriting/credit-assessment/{vendor_account_id}", response_model=CreditUnderwritingResponse, tags=["Bank Underwriting & Credit Risk"])
 def evaluate_vendor_credit_risk(vendor_account_id: str, db: Session = Depends(get_db)):
-    """
-    Evaluates sub-ledger turnover, debt service capacity (DSCR), and cash velocity.
-    Outputs a formal bank-grade working capital revolver limit.
-    """
     return LedgerService.evaluate_credit_underwriting(db, vendor_account_id)
 
 @app.post("/api/v1/ledger/post-transaction", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED, tags=["Double-Entry Engine"])
